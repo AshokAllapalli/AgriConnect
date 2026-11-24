@@ -1,0 +1,3 @@
+KisanVani — From Farm to Market
+
+KisanVani is a full-stack platform for India's fresh-produce supply chain. Farmers list harvests, Market Mandi Owners trade wholesale lots, shopkeepers run a weighing-scale POS and buy stock, drivers carry loads with live GPS tracking, and admins run the platform. Every role works from the same orders, weights and payments, so nothing is typed twice and every step is audited.
