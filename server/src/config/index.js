@@ -1,0 +1,157 @@
+require('dotenv').config();
+const { z } = require('zod');
+
+const bool = (def) =>
+  z
+    .union([z.boolean(), z.string()])
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? def : v === true || v === 'true' || v === '1'));
+
+const schema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  PORT: z.coerce.number().int().positive().default(5000),
+  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  JWT_ACCESS_SECRET: z.string().min(8),
+  JWT_REFRESH_SECRET: z.string().min(8),
+  JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
+  // Sliding: every visit renews the session for this many days. Browsers keep cookies for at most 400 days.
+  REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().max(400).default(365),
+  BCRYPT_ROUNDS: z.coerce.number().int().min(4).max(15).default(10),
+  COOKIE_SECURE: bool(false),
+  COOKIE_SAME_SITE: z.enum(['lax', 'strict', 'none']).default('lax'),
+  CLIENT_URL: z.string().default('http://localhost:5173'),
+  PUBLIC_SERVER_URL: z.string().default('http://localhost:5000'),
+
+  SMTP_HOST: z.string().optional().default(''),
+  SMTP_PORT: z.coerce.number().int().default(587),
+  SMTP_USER: z.string().optional().default(''),
+  SMTP_PASS: z.string().optional().default(''),
+  SMTP_FROM: z.string().default('KisanVani <no-reply@kisanvani.local>'),
+
+  STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
+  UPLOAD_DIR: z.string().default('uploads'),
+  MAX_UPLOAD_MB: z.coerce.number().positive().default(5),
+  S3_BUCKET: z.string().optional().default(''),
+  S3_REGION: z.string().optional().default('ap-south-1'),
+  S3_ENDPOINT: z.string().optional().default(''),
+  S3_ACCESS_KEY_ID: z.string().optional().default(''),
+  S3_SECRET_ACCESS_KEY: z.string().optional().default(''),
+  S3_PUBLIC_BASE_URL: z.string().optional().default(''),
+
+  TRACKING_MIN_INTERVAL_SEC: z.coerce.number().min(1).default(5),
+  TRACKING_STALE_AFTER_SEC: z.coerce.number().min(10).default(120),
+  // Voice & video calls (WebRTC). STUN finds the public address; TURN relays media when a direct
+  // connection is impossible (mobile data, strict office/hotel networks) — needed in production.
+  STUN_URLS: z.string().default('stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302'),
+  TURN_URLS: z.string().optional(), // e.g. turn:turn.example.com:3478,turns:turn.example.com:5349?transport=tcp
+  TURN_USERNAME: z.string().optional(), // static credentials …
+  TURN_CREDENTIAL: z.string().optional(),
+  TURN_SECRET: z.string().optional(), // … or coturn "use-auth-secret": short-lived credentials per user
+  TURN_CREDENTIAL_TTL_SEC: z.coerce.number().int().min(300).default(6 * 3600),
+  CLOUDFLARE_TURN_KEY_ID: z.string().optional(), // … or Cloudflare Realtime TURN
+  CLOUDFLARE_TURN_API_TOKEN: z.string().optional(),
+  CALL_RING_TIMEOUT_SEC: z.coerce.number().int().min(10).max(120).default(40),
+  CALL_RECONNECT_GRACE_SEC: z.coerce.number().int().min(5).max(120).default(30),
+
+  LOG_LEVEL: z.string().default('info'),
+  LOG_TO_FILE: bool(true),
+});
+
+const parsed = schema.safeParse(process.env);
+if (!parsed.success) {
+  // eslint-disable-next-line no-console
+  console.error('Invalid environment configuration:', parsed.error.flatten().fieldErrors);
+  process.exit(1);
+}
+
+const env = parsed.data;
+
+if (env.NODE_ENV === 'production') {
+  const weak = ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'].filter(
+    (k) => env[k].length < 32 || /replace_me|dev_only/i.test(env[k])
+  );
+  if (weak.length) {
+    // eslint-disable-next-line no-console
+    console.error(`Refusing to start: ${weak.join(', ')} must be strong random values (>= 32 chars) in production.`);
+    process.exit(1);
+  }
+}
+
+const config = {
+  env: env.NODE_ENV,
+  isProd: env.NODE_ENV === 'production',
+  isTest: env.NODE_ENV === 'test',
+  port: env.PORT,
+  databaseUrl: env.DATABASE_URL,
+  clientUrls: env.CLIENT_URL.split(',').map((s) => s.trim()).filter(Boolean),
+  publicServerUrl: env.PUBLIC_SERVER_URL.replace(/\/$/, ''),
+  jwt: {
+    accessSecret: env.JWT_ACCESS_SECRET,
+    refreshSecret: env.JWT_REFRESH_SECRET,
+    accessExpiresIn: env.JWT_ACCESS_EXPIRES_IN,
+    refreshTtlDays: env.REFRESH_TOKEN_TTL_DAYS,
+  },
+  bcryptRounds: env.NODE_ENV === 'test' ? 4 : env.BCRYPT_ROUNDS,
+  cookieSecure: env.COOKIE_SECURE || env.COOKIE_SAME_SITE === 'none',
+  cookieSameSite: env.COOKIE_SAME_SITE,
+  smtp: {
+    host: env.SMTP_HOST,
+    port: env.SMTP_PORT,
+    user: env.SMTP_USER,
+    pass: env.SMTP_PASS,
+    from: env.SMTP_FROM,
+    enabled: Boolean(env.SMTP_HOST),
+  },
+  storage: {
+    driver: env.STORAGE_DRIVER,
+    uploadDir: env.UPLOAD_DIR,
+    maxBytes: Math.round(env.MAX_UPLOAD_MB * 1024 * 1024),
+    s3: {
+      bucket: env.S3_BUCKET,
+      region: env.S3_REGION,
+      endpoint: env.S3_ENDPOINT,
+      accessKeyId: env.S3_ACCESS_KEY_ID,
+      secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+      publicBaseUrl: env.S3_PUBLIC_BASE_URL,
+    },
+  },
+  tracking: {
+    minIntervalSec: env.TRACKING_MIN_INTERVAL_SEC,
+    staleAfterSec: env.TRACKING_STALE_AFTER_SEC,
+  },
+  log: { level: env.LOG_LEVEL, toFile: env.LOG_TO_FILE && env.NODE_ENV !== 'test' },
+  calls: {
+    stunUrls: env.STUN_URLS.split(',').map((s) => s.trim()).filter(Boolean),
+    turnUrls: (env.TURN_URLS || '').split(',').map((s) => s.trim()).filter(Boolean),
+    turnUsername: env.TURN_USERNAME,
+    turnCredential: env.TURN_CREDENTIAL,
+    turnSecret: env.TURN_SECRET,
+    turnTtlSec: env.TURN_CREDENTIAL_TTL_SEC,
+    cloudflareKeyId: env.CLOUDFLARE_TURN_KEY_ID,
+    cloudflareToken: env.CLOUDFLARE_TURN_API_TOKEN,
+    ringTimeoutMs: env.CALL_RING_TIMEOUT_SEC * 1000,
+    reconnectGraceMs: env.CALL_RECONNECT_GRACE_SEC * 1000,
+  },
+};
+
+// In development, also allow localhost / 127.0.0.1 / ::1 / private LAN IPs on any port.
+// Vite moves to 5174, 5175… when 5173 is busy, and the app is often opened via 127.0.0.1 or a LAN IP;
+// a strict match against CLIENT_URL makes the browser block those responses (axios ERR_NETWORK).
+const DEV_ORIGIN_RE =
+  /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?$/;
+
+const normalizeOrigin = (o) => o.replace(/\/+$/, '').toLowerCase();
+config.clientUrls = config.clientUrls.map(normalizeOrigin);
+
+/** True when a browser Origin may call the API (shared by Express CORS and Socket.IO). */
+config.isAllowedOrigin = (origin) => {
+  if (!origin) return true; // same-origin requests, curl, mobile apps
+  const o = normalizeOrigin(origin);
+  if (config.clientUrls.includes(o)) return true;
+  return !config.isProd && DEV_ORIGIN_RE.test(o);
+};
+
+/** `origin` callback for the cors middleware and Socket.IO */
+config.corsOrigin = (origin, cb) => cb(null, config.isAllowedOrigin(origin));
+
+module.exports = config;
